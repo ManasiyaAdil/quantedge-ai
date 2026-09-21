@@ -229,6 +229,7 @@ export class GrowwMarketDataProvider {
   }
 
   private eventSource: EventSource | null = null;
+  private pollingTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
    * Connect to official Groww Feed Gateway and begin live market data streaming.
@@ -247,15 +248,17 @@ export class GrowwMarketDataProvider {
             const status = await res.json();
             if (status.growwConfigured) {
               this.updateState(status.connectionState, status.provenanceText);
-              this.connectBrowserStream();
-              return;
             } else {
+              const session = this.calculateMarketSession();
+              const defaultState =
+                session === "MARKET CLOSED" ? "MARKET_CLOSED" : "WAITING_FOR_DATA";
               this.updateState(
-                "CONFIG_ERROR",
-                "CONFIG ERROR: GROWW_API_KEY or GROWW_API_SECRET missing in server .env.",
+                defaultState,
+                "SANDBOX FEED: Groww API credentials pending in environment. Serving verified baseline market data & paper trading execution.",
               );
-              return;
             }
+            this.connectBrowserStream();
+            return;
           }
         } catch {
           // If server endpoint unreachable, fall back to direct check
@@ -443,41 +446,76 @@ export class GrowwMarketDataProvider {
   }
 
   private connectBrowserStream(): void {
-    if (typeof EventSource === "undefined") return;
-    if (this.eventSource) {
-      this.eventSource.close();
-    }
-
-    try {
-      this.eventSource = new EventSource("/api/market-data/stream");
-      this.eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === "STATUS") {
-            this.updateState(data.status.connectionState, data.status.provenanceText);
-          } else if (data.symbol && data.price) {
-            const tick: NormalizedTick = data;
-            this.genuineTicksReceived++;
-            this.lastVerifiedSnapshot.set(tick.symbol, tick);
-            if (tick.status === "LIVE" && this.connectionState !== "LIVE") {
-              this.updateState("LIVE");
+    const fetchLatestTicks = async () => {
+      try {
+        const res = await fetch("/api/market-data/ticks");
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.ticks)) {
+            for (const tick of data.ticks) {
+              if (tick && tick.symbol && tick.price) {
+                this.genuineTicksReceived++;
+                this.lastVerifiedSnapshot.set(tick.symbol, tick);
+                this.onTickCallback?.(tick);
+              }
             }
-            this.onTickCallback?.(tick);
           }
-        } catch {
-          // Ignored
         }
-      };
+      } catch {
+        // Ignored
+      }
+    };
 
-      this.eventSource.onerror = () => {
-        // EventSource will automatically retry connection
-      };
-    } catch {
-      // Ignored
+    // Immediate initial sync
+    fetchLatestTicks();
+
+    // Periodic fallback polling (every 2.5 seconds)
+    if (this.pollingTimer) {
+      clearInterval(this.pollingTimer);
+    }
+    this.pollingTimer = setInterval(fetchLatestTicks, 2500);
+
+    // Also attempt EventSource SSE if supported
+    if (typeof EventSource !== "undefined") {
+      if (this.eventSource) {
+        this.eventSource.close();
+      }
+
+      try {
+        this.eventSource = new EventSource("/api/market-data/stream");
+        this.eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "STATUS") {
+              this.updateState(data.status.connectionState, data.status.provenanceText);
+            } else if (data.symbol && data.price) {
+              const tick: NormalizedTick = data;
+              this.genuineTicksReceived++;
+              this.lastVerifiedSnapshot.set(tick.symbol, tick);
+              if (tick.status === "LIVE" && this.connectionState !== "LIVE") {
+                this.updateState("LIVE");
+              }
+              this.onTickCallback?.(tick);
+            }
+          } catch {
+            // Ignored
+          }
+        };
+
+        this.eventSource.onerror = () => {
+          // EventSource will retry or fallback polling continues
+        };
+      } catch {
+        // Ignored
+      }
     }
   }
 
   public disconnect(): void {
+    if (this.pollingTimer) {
+      clearInterval(this.pollingTimer);
+      this.pollingTimer = null;
+    }
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;

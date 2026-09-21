@@ -55,7 +55,8 @@ import { signalEngine, type StrategySignal } from "@/services/signal-engine";
 import { marketRegimeEngine } from "@/services/market-regime";
 import { marketDataEngine } from "@/services/market-data-engine";
 import { AreaSeries } from "@/components/charts/Charts";
-import { type Timeframe } from "@/services/market-data-types";
+import { type Timeframe, type Candle } from "@/services/market-data-types";
+import { realtimeBus } from "@/services/realtime-bus";
 import { WatchlistTable } from "@/components/trading/WatchlistTable";
 import { InstrumentDrawer } from "@/components/trading/InstrumentDrawer";
 import { cn } from "@/lib/utils";
@@ -115,15 +116,65 @@ export function LiveTerminalPage() {
     supertrend: true,
   });
 
-  // Active Instrument Data
+  // Active Instrument Data & Live Tick Subscription
   const selectedMapping = instrumentMapper.getMapping(selectedSymbol) || watchlist[0];
-  const latestTick = marketDataEngine.getLatestTick(selectedSymbol);
-  const currentLtp = latestTick ? latestTick.price : selectedMapping.basePrice;
-  const currentChange = latestTick ? latestTick.change : 0;
-  const currentChangePct = latestTick ? latestTick.changePct : 0;
+  const [liveTick, setLiveTick] = useState(() => marketDataEngine.getLatestTick(selectedSymbol));
 
-  // Candles & Indicators
-  const candles = candleAggregator.getCandles(selectedSymbol, timeframe);
+  useEffect(() => {
+    setLiveTick(marketDataEngine.getLatestTick(selectedSymbol));
+    const unsub = realtimeBus.subscribe("MARKET_TICK", (t) => {
+      if (t.symbol === selectedSymbol) {
+        setLiveTick(t);
+      }
+    });
+    return unsub;
+  }, [selectedSymbol]);
+
+  const currentLtp = liveTick ? liveTick.price : selectedMapping.basePrice;
+  const currentChange = liveTick ? liveTick.change : 0;
+  const currentChangePct = liveTick ? liveTick.changePct : 0;
+
+  // Reactive Candles & Indicators with live subscription and REST fallback
+  const [candles, setCandles] = useState<Candle[]>(() =>
+    candleAggregator.getCandles(selectedSymbol, timeframe),
+  );
+
+  useEffect(() => {
+    // Initial fetch from aggregator
+    setCandles(candleAggregator.getCandles(selectedSymbol, timeframe));
+
+    // Background REST fetch from server endpoint
+    fetch(
+      `/api/market-data/candles?symbol=${encodeURIComponent(selectedSymbol)}&timeframe=${timeframe}`,
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data.candles) && data.candles.length > 0) {
+          setCandles(data.candles);
+        }
+      })
+      .catch(() => {});
+
+    // Subscribe to candle updates
+    const unsubCandles = candleAggregator.subscribe((c) => {
+      if (c.symbol === selectedSymbol && c.timeframe === timeframe) {
+        setCandles(candleAggregator.getCandles(selectedSymbol, timeframe));
+      }
+    });
+
+    // Subscribe to market ticks to update latest candle
+    const unsubTicks = realtimeBus.subscribe("MARKET_TICK", (t) => {
+      if (t.symbol === selectedSymbol) {
+        setCandles(candleAggregator.getCandles(selectedSymbol, timeframe));
+      }
+    });
+
+    return () => {
+      unsubCandles();
+      unsubTicks();
+    };
+  }, [selectedSymbol, timeframe]);
+
   const indicators = IndicatorEngine.calculateAll(candles);
   const regime = marketRegimeEngine.getRegime();
 
@@ -162,10 +213,11 @@ export function LiveTerminalPage() {
   const isOverMaxTrade = estValue > riskLimits.maxTradeValue;
   const isMissingStopLoss = !stopLoss || stopLoss <= 0;
   const isFeedStale =
-    feedStatus.isStale ||
-    feedStatus.connectionState === "CONFIG_ERROR" ||
-    feedStatus.connectionState === "AUTH_ERROR" ||
-    feedStatus.connectionState === "DISCONNECTED";
+    tradingMode === "LIVE" &&
+    (feedStatus.isStale ||
+      feedStatus.connectionState === "CONFIG_ERROR" ||
+      feedStatus.connectionState === "AUTH_ERROR" ||
+      feedStatus.connectionState === "DISCONNECTED");
 
   const handleSelectSymbol = (sym: string) => {
     setSelectedSymbol(sym);
@@ -508,8 +560,15 @@ export function LiveTerminalPage() {
           {/* Chart View */}
           <div className="h-64 w-full">
             <AreaSeries
-              data={chartData.map((d) => ({ date: d.time, value: d.value }))}
+              data={chartData.map((d) => ({
+                time: d.time,
+                date: d.time,
+                label: d.time,
+                value: d.value,
+                price: d.value,
+              }))}
               dataKey="value"
+              xKey="time"
               height={250}
             />
           </div>

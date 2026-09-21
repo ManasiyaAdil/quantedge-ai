@@ -382,6 +382,142 @@ export class GrowwAPI {
       subscriptionId: data.subscriptionId || "",
     };
   }
+
+  /**
+   * Fetch live quote snapshot for an instrument from official Groww REST API
+   * GET https://api.groww.in/v1/live-data/quote
+   */
+  public static async getQuote(
+    sessionToken: string,
+    exchange: "NSE" | "BSE",
+    segment: "CASH" | "FNO",
+    tradingSymbol: string,
+  ): Promise<{
+    ltp: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    dayChange: number;
+    dayChangePercentage: number;
+    tsInMillis: number;
+  }> {
+    const url = new URL(`${GrowwAPI.BASE_URL}/live-data/quote`);
+    url.searchParams.set("exchange", exchange);
+    url.searchParams.set("segment", segment);
+    url.searchParams.set("trading_symbol", tradingSymbol);
+
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${sessionToken}`,
+        Accept: "application/json",
+        "x-api-version": "1.0",
+      },
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Groww live-data/quote failed (${res.status}): ${errText.slice(0, 100)}`);
+    }
+
+    const data = await res.json();
+    return {
+      ltp: Number(data.ltp || data.last_price || data.price || 0),
+      open: Number(data.open || data.ohlc?.open || 0),
+      high: Number(data.high || data.ohlc?.high || 0),
+      low: Number(data.low || data.ohlc?.low || 0),
+      close: Number(data.close || data.ohlc?.close || 0),
+      volume: Number(data.volume || 0),
+      dayChange: Number(data.dayChange || data.change || 0),
+      dayChangePercentage: Number(data.dayChangePercentage || data.change_percent || 0),
+      tsInMillis: Number(data.tsInMillis || Date.now()),
+    };
+  }
+
+  /**
+   * Fetch historical candles for an instrument from official Groww REST API
+   * GET https://api.groww.in/v1/historical/candle
+   */
+  public static async getHistoricalCandles(
+    sessionToken: string,
+    exchange: "NSE" | "BSE",
+    segment: "CASH" | "FNO",
+    tradingSymbol: string,
+    startTime: number,
+    endTime: number,
+    intervalInMinutes: number = 15,
+  ): Promise<Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>> {
+    const url = new URL(`${GrowwAPI.BASE_URL}/historical/candle`);
+    url.searchParams.set("exchange", exchange);
+    url.searchParams.set("segment", segment);
+    url.searchParams.set("trading_symbol", tradingSymbol);
+    url.searchParams.set("start_time", String(startTime));
+    url.searchParams.set("end_time", String(endTime));
+    url.searchParams.set("interval_in_minutes", String(intervalInMinutes));
+
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${sessionToken}`,
+        Accept: "application/json",
+        "x-api-version": "1.0",
+      },
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Groww historical candles failed (${res.status}): ${errText.slice(0, 100)}`);
+    }
+
+    const data = await res.json();
+    const rawCandles = Array.isArray(data.candles) ? data.candles : Array.isArray(data) ? data : [];
+    return rawCandles.map((c: any) => {
+      if (Array.isArray(c)) {
+        // format: [time, open, high, low, close, volume]
+        return {
+          time: Number(c[0]) * (c[0] < 1e12 ? 1000 : 1),
+          open: Number(c[1]),
+          high: Number(c[2]),
+          low: Number(c[3]),
+          close: Number(c[4]),
+          volume: Number(c[5] || 0),
+        };
+      }
+      return {
+        time: Number(c.time || c.timestamp || Date.now()),
+        open: Number(c.open || 0),
+        high: Number(c.high || 0),
+        low: Number(c.low || 0),
+        close: Number(c.close || 0),
+        volume: Number(c.volume || 0),
+      };
+    });
+  }
+
+  /**
+   * Fetch orders list from official Groww REST API
+   * GET https://api.groww.in/v1/order/list
+   */
+  public static async getOrderList(sessionToken: string): Promise<any[]> {
+    const res = await fetch(`${GrowwAPI.BASE_URL}/order/list`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${sessionToken}`,
+        Accept: "application/json",
+        "x-api-version": "1.0",
+      },
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Groww order list failed (${res.status}): ${errText.slice(0, 100)}`);
+    }
+
+    const data = await res.json();
+    return Array.isArray(data.orders) ? data.orders : Array.isArray(data) ? data : [];
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -17,7 +17,12 @@ import {
   type NormalizedTick,
   type FeedConnectionState,
   type MarketSessionState,
+  type Timeframe,
+  type Candle,
 } from "./market-data-types";
+import { candleAggregator } from "./candle-aggregator";
+import { serverStore } from "./server-store";
+import { type DetailedOrder } from "./order-engine";
 
 class ServerMarketDataManager {
   private feed: GrowwFeed | null = null;
@@ -375,6 +380,132 @@ class ServerMarketDataManager {
         connection: "keep-alive",
         "access-control-allow-origin": "*",
       },
+    });
+  }
+
+  /**
+   * Fetch live quote for symbol from Groww REST API if configured, or snapshot fallback
+   */
+  public async getQuote(symbol: string): Promise<NormalizedTick | undefined> {
+    const snap = this.lastVerifiedSnapshot.get(symbol);
+    const envStatus = checkEnvConfigured();
+
+    if (envStatus.growwApiKey && envStatus.growwApiSecret) {
+      try {
+        const apiKey = process.env.GROWW_API_KEY!;
+        const apiSecret = process.env.GROWW_API_SECRET!;
+        const token = await GrowwAPI.getAccessToken(apiKey, apiSecret);
+        const inst = WATCHLIST_INSTRUMENTS.find((i) => i.symbol === symbol);
+
+        if (inst) {
+          const seg = inst.assetClass === "INDEX" ? "FNO" : "CASH";
+          const quote = await GrowwAPI.getQuote(token, inst.exchange, seg, inst.growwSymbol);
+
+          if (quote && quote.ltp > 0) {
+            const updated: NormalizedTick = {
+              symbol: inst.symbol,
+              exchange: inst.exchange,
+              instrumentId: inst.growwKey,
+              price: quote.ltp,
+              open: quote.open || inst.basePrice,
+              high: quote.high || Math.max(quote.ltp, inst.basePrice),
+              low: quote.low || Math.min(quote.ltp, inst.basePrice),
+              previousClose: quote.close || inst.basePrice,
+              change: quote.dayChange || Number((quote.ltp - inst.basePrice).toFixed(2)),
+              changePct: quote.dayChangePercentage || Number((((quote.ltp - inst.basePrice) / inst.basePrice) * 100).toFixed(2)),
+              volume: quote.volume || 0,
+              timestamp: new Date(quote.tsInMillis).toISOString(),
+              provider: "groww",
+              status: "LIVE",
+            };
+            this.lastVerifiedSnapshot.set(symbol, updated);
+            candleAggregator.addTick(updated);
+            return updated;
+          }
+        }
+      } catch (err) {
+        // Fallback to snapshot on error
+      }
+    }
+
+    return snap;
+  }
+
+  /**
+   * Get historical or aggregated session candles for chart rendering
+   */
+  public getCandles(symbol: string, timeframe: Timeframe = "15m"): Candle[] {
+    return candleAggregator.getCandles(symbol, timeframe);
+  }
+
+  /**
+   * Get authoritative server orders
+   */
+  public async getOrders(): Promise<DetailedOrder[]> {
+    const orders = serverStore.getTable("orders");
+    return orders && orders.length > 0 ? orders : [];
+  }
+
+  /**
+   * Record new order to authoritative server store
+   */
+  public async recordOrder(order: DetailedOrder): Promise<void> {
+    serverStore.recordOrder(order);
+  }
+
+  /**
+   * Web HTTP handler for GET /api/market-data/quote?symbol=...
+   */
+  public async createQuoteResponse(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const symbol = url.searchParams.get("symbol") || "RELIANCE";
+    const quote = await this.getQuote(symbol);
+
+    return new Response(JSON.stringify(quote || {}), {
+      status: quote ? 200 : 404,
+      headers: { "content-type": "application/json", "cache-control": "no-cache" },
+    });
+  }
+
+  /**
+   * Web HTTP handler for GET /api/market-data/candles?symbol=...&timeframe=...
+   */
+  public async createCandlesResponse(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const symbol = url.searchParams.get("symbol") || "RELIANCE";
+    const timeframe = (url.searchParams.get("timeframe") as Timeframe) || "15m";
+    const candles = this.getCandles(symbol, timeframe);
+
+    return new Response(JSON.stringify(candles), {
+      status: 200,
+      headers: { "content-type": "application/json", "cache-control": "no-cache" },
+    });
+  }
+
+  /**
+   * Web HTTP handler for GET / POST /api/orders
+   */
+  public async createOrdersResponse(request: Request): Promise<Response> {
+    if (request.method === "POST") {
+      try {
+        const body = (await request.json()) as DetailedOrder;
+        await this.recordOrder(body);
+        return new Response(JSON.stringify({ success: true, order: body }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Invalid order payload" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+
+    const orders = await this.getOrders();
+    return new Response(JSON.stringify(orders), {
+      status: 200,
+      headers: { "content-type": "application/json", "cache-control": "no-cache" },
     });
   }
 }

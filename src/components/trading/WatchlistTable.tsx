@@ -5,7 +5,7 @@
  * Features: Search, sorting, instrument selection, custom list add/remove in localStorage.
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Search, ArrowUpDown, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { marketDataEngine } from "@/services/market-data-engine";
@@ -13,6 +13,7 @@ import { instrumentMapper } from "@/services/instrument-mapper";
 import { candleAggregator } from "@/services/candle-aggregator";
 import { IndicatorEngine } from "@/services/indicator-engine";
 import { signalEngine } from "@/services/signal-engine";
+import { realtimeBus } from "@/services/realtime-bus";
 import { Input } from "@/components/ui/input";
 
 export type WatchlistGroup = "ALL" | "INDEX" | "BANKING" | "IT" | "AUTO" | "PHARMA" | "CUSTOM";
@@ -95,6 +96,15 @@ export function WatchlistTable({
     });
   }, [allInstruments, activeGroup, search, customSymbols]);
 
+  const [tickVersion, setTickVersion] = useState(0);
+
+  useEffect(() => {
+    const unsub = realtimeBus.subscribe("MARKET_TICK", () => {
+      setTickVersion((v) => v + 1);
+    });
+    return unsub;
+  }, []);
+
   // Compute live data and indicators for table
   const enrichedList = useMemo(() => {
     return filteredList.map((inst) => {
@@ -123,7 +133,7 @@ export function WatchlistTable({
         isCustom: customSymbols.includes(inst.symbol),
       };
     });
-  }, [filteredList, customSymbols]);
+  }, [filteredList, customSymbols, tickVersion]);
 
   // Sort list
   const sortedList = useMemo(() => {

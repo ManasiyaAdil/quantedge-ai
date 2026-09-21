@@ -17,7 +17,7 @@ import {
   Layers,
   Zap,
 } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { toast } from "sonner";
 
 import { AreaSeries } from "@/components/charts/Charts";
@@ -40,6 +40,8 @@ import { instrumentMapper } from "@/services/instrument-mapper";
 import { candleAggregator } from "@/services/candle-aggregator";
 import { IndicatorEngine } from "@/services/indicator-engine";
 import { marketRegimeEngine } from "@/services/market-regime";
+import { realtimeBus } from "@/services/realtime-bus";
+import { type Candle } from "@/services/market-data-types";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/app/")({
@@ -104,20 +106,63 @@ export function Dashboard() {
     basePrice: 1000,
   };
 
-  const tick = marketDataEngine.getLatestTick(selectedSymbol);
-  const ltp = tick ? tick.price : selectedMapping.basePrice;
-  const change = tick ? tick.change : 0;
-  const changePct = tick ? tick.changePct : 0;
+  // Reactive live tick and candles
+  const [liveTick, setLiveTick] = useState(() => marketDataEngine.getLatestTick(selectedSymbol));
+  const [candles, setCandles] = useState<Candle[]>(() =>
+    candleAggregator.getCandles(selectedSymbol, timeframe),
+  );
+  const [tickVersion, setTickVersion] = useState(0);
+
+  useEffect(() => {
+    setLiveTick(marketDataEngine.getLatestTick(selectedSymbol));
+    const unsub = realtimeBus.subscribe("MARKET_TICK", (t) => {
+      setTickVersion((v) => v + 1);
+      if (t.symbol === selectedSymbol) {
+        setLiveTick(t);
+        setCandles(candleAggregator.getCandles(selectedSymbol, timeframe));
+      }
+    });
+    return unsub;
+  }, [selectedSymbol, timeframe]);
+
+  useEffect(() => {
+    setCandles(candleAggregator.getCandles(selectedSymbol, timeframe));
+
+    fetch(
+      `/api/market-data/candles?symbol=${encodeURIComponent(selectedSymbol)}&timeframe=${timeframe}`,
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data.candles) && data.candles.length > 0) {
+          setCandles(data.candles);
+        }
+      })
+      .catch(() => {});
+
+    const unsubCandles = candleAggregator.subscribe((c) => {
+      if (c.symbol === selectedSymbol && c.timeframe === timeframe) {
+        setCandles(candleAggregator.getCandles(selectedSymbol, timeframe));
+      }
+    });
+
+    return unsubCandles;
+  }, [selectedSymbol, timeframe]);
+
+  const ltp = liveTick ? liveTick.price : selectedMapping.basePrice;
+  const change = liveTick ? liveTick.change : 0;
+  const changePct = liveTick ? liveTick.changePct : 0;
   const isUp = changePct >= 0;
 
-  // Aggregated candles & indicators for selected instrument
-  const candles = candleAggregator.getCandles(selectedSymbol, timeframe);
+  // Aggregated indicators for selected instrument
   const indicators = IndicatorEngine.calculateAll(candles);
   const regime = marketRegimeEngine.getRegime();
 
   const chartData = candles.slice(-40).map((c) => ({
     time: new Date(c.openTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    date: new Date(c.openTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    label: new Date(c.openTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     value: c.close,
+    price: c.close,
   }));
 
   // Calculate real Market Breadth & Top Movers across monitored universe
@@ -150,7 +195,7 @@ export function Dashboard() {
       topLosers: sortedByLoss.slice(0, 3),
       volumeLeaders: sortedByVol.slice(0, 3),
     };
-  }, [universe]);
+  }, [universe, tickVersion]);
 
   // Sector performance summary
   const sectorSummary = [

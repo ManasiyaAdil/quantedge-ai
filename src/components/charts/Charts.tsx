@@ -59,6 +59,30 @@ export function AreaSeries({
   const gradId = gradientId || "qeFill";
   const strokeColor = color || "var(--color-primary)";
 
+  // Dynamically resolve xKey and dataKey if default does not exist on the first item
+  const firstItem = data && data.length > 0 ? data[0] : null;
+  const resolvedXKey =
+    firstItem && xKey in firstItem
+      ? xKey
+      : firstItem && "time" in firstItem
+        ? "time"
+        : firstItem && "date" in firstItem
+          ? "date"
+          : firstItem && "label" in firstItem
+            ? "label"
+            : xKey;
+
+  const resolvedDataKey =
+    firstItem && dataKey in firstItem
+      ? dataKey
+      : firstItem && "value" in firstItem
+        ? "value"
+        : firstItem && "price" in firstItem
+          ? "price"
+          : firstItem && "close" in firstItem
+            ? "close"
+            : dataKey;
+
   return (
     <ResponsiveContainer width="100%" height={height}>
       <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -69,7 +93,7 @@ export function AreaSeries({
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 6" stroke="var(--color-border)" vertical={false} />
-        <XAxis dataKey={xKey} {...axis} minTickGap={28} />
+        <XAxis dataKey={resolvedXKey} {...axis} minTickGap={28} />
         <YAxis {...axis} width={56} domain={["auto", "auto"]} />
         <Tooltip {...tooltipStyle} />
         {compare && (
@@ -84,7 +108,7 @@ export function AreaSeries({
         )}
         <Area
           type="monotone"
-          dataKey={dataKey}
+          dataKey={resolvedDataKey}
           stroke={strokeColor}
           strokeWidth={2.4}
           fill={`url(#${gradId})`}

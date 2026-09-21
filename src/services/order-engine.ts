@@ -504,6 +504,15 @@ class OrderEngine {
 
     this.save();
     realtimeBus.emit("ORDER_UPDATED", resultOrder);
+
+    if (typeof fetch !== "undefined" && resultOrder) {
+      fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(resultOrder),
+      }).catch(() => {});
+    }
+
     return resultOrder;
   }
 
@@ -539,6 +548,14 @@ class OrderEngine {
 
     this.save();
     realtimeBus.emit("ORDER_UPDATED", resultOrder);
+
+    if (typeof fetch !== "undefined" && resultOrder) {
+      fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(resultOrder),
+      }).catch(() => {});
+    }
 
     auditLogService.record({
       user: "Order Engine",

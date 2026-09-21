@@ -63,6 +63,18 @@ export default {
           headers: { "content-type": "application/json", "cache-control": "no-cache" },
         });
       }
+      if (url.pathname === "/api/market-data/quote") {
+        const { serverMarketData } = await import("./services/server-market-data");
+        return serverMarketData.createQuoteResponse(request);
+      }
+      if (url.pathname === "/api/market-data/candles") {
+        const { serverMarketData } = await import("./services/server-market-data");
+        return serverMarketData.createCandlesResponse(request);
+      }
+      if (url.pathname === "/api/orders") {
+        const { serverMarketData } = await import("./services/server-market-data");
+        return serverMarketData.createOrdersResponse(request);
+      }
       if (url.pathname === "/api/market-data/stream") {
         const { serverMarketData } = await import("./services/server-market-data");
         await serverMarketData.start();
